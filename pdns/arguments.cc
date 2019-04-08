@@ -34,6 +34,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <limits.h>
+#include <fcntl.h>
 
 const ArgvMap::param_t::const_iterator ArgvMap::begin()
 {
@@ -254,6 +255,36 @@ int ArgvMap::asNum(const string &arg, int def)
    throw ArgException("'"+arg+"' value '"+string(cptr_orig) + string( "' is not a valid number"));
 
   return retval;
+}
+
+map<string,int> ArgvMap::asFDMap(const string &arg)
+{
+  if(!parmIsset(arg))
+    throw ArgException(string("Undefined but needed argument: '")+arg+"'");
+
+  vector<string>pairs;
+  stringtok(pairs,params[arg],",");
+  map<string,int> fd_map;
+  for(const auto &elem : pairs) {
+    const auto delim = elem.find("=");
+    if(delim == string::npos)
+      throw PDNSException("Element '" + elem + "' of fd map '" + arg + "' "
+                          "needs '=' as separator between address key and fd value");
+    const string address = elem.substr(0, delim);
+    const string fd_str = elem.substr(delim+1, elem.length());
+    const char *cptr_orig = fd_str.c_str();
+    char *cptr_ret = NULL;
+    const int fd = static_cast<int>(strtol(cptr_orig, &cptr_ret, 0));
+    if (cptr_ret == cptr_orig)
+      throw PDNSException("Key '"+address+"' in fd map '" + arg + "' "
+                          "maps to '"+fd_str+"' which can't be converted to a number");
+    if (fcntl(fd, F_GETFD) < 0)
+      throw PDNSException("Key '"+address+"' in fd map '" + arg + "' "
+                          " maps to '"+fd_str+"' which is not a valid file descriptor: "
+                          +string(strerror(errno)));
+    fd_map[address] = fd;
+  }
+  return fd_map;
 }
 
 bool ArgvMap::isEmpty(const string &arg) 

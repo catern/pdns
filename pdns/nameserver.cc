@@ -95,58 +95,65 @@ void UDPNameserver::bindIPv4()
   if(locals.empty())
     throw PDNSException("No local address specified");
 
+  map<string,int> fd_map = ::arg().asFDMap("local-address-udp-fds");
+
   int s;
   for(vector<string>::const_iterator i=locals.begin();i!=locals.end();++i) {
     string localname(*i);
     ComboAddress locala;
-
-    s=socket(AF_INET,SOCK_DGRAM,0);
-
-    if(s<0) {
-      g_log<<Logger::Error<<"Unable to acquire UDP socket: "+string(strerror(errno)) << endl;
-      throw PDNSException("Unable to acquire a UDP socket: "+string(strerror(errno)));
-    }
-  
-    setCloseOnExec(s);
-  
-    if(!setNonBlocking(s))
-      throw PDNSException("Unable to set UDP socket to non-blocking: "+stringerror());
 
     locala=ComboAddress(localname, ::arg().asNum("local-port"));
 
     if(locala.sin4.sin_family != AF_INET)
       throw PDNSException("Attempting to bind IPv4 socket to IPv6 address");
 
-    if(IsAnyAddress(locala))
-      setsockopt(s, IPPROTO_IP, GEN_IP_PKTINFO, &one, sizeof(one));
+    const auto fd_it = fd_map.find(localname);
+    if (fd_it != fd_map.end()) {
+      s = fd_it->second;
+    } else {
+      s=socket(AF_INET,SOCK_DGRAM,0);
 
-    if (!setSocketTimestamps(s))
-      g_log<<Logger::Warning<<"Unable to enable timestamp reporting for socket"<<endl;
+      if(s<0) {
+        g_log<<Logger::Error<<"Unable to acquire UDP socket: "+string(strerror(errno)) << endl;
+        throw PDNSException("Unable to acquire a UDP socket: "+string(strerror(errno)));
+      }
+
+      if(IsAnyAddress(locala))
+        setsockopt(s, IPPROTO_IP, GEN_IP_PKTINFO, &one, sizeof(one));
+
+      if (!setSocketTimestamps(s))
+        g_log<<Logger::Warning<<"Unable to enable timestamp reporting for socket"<<endl;
 
 #ifdef SO_REUSEPORT
-    if( d_can_reuseport )
-        if( setsockopt(s, SOL_SOCKET, SO_REUSEPORT, &one, sizeof(one)) )
-          d_can_reuseport = false;
+      if( d_can_reuseport )
+          if( setsockopt(s, SOL_SOCKET, SO_REUSEPORT, &one, sizeof(one)) )
+            d_can_reuseport = false;
 #endif
 
-    if( ::arg().mustDo("non-local-bind") )
-	Utility::setBindAny(AF_INET, s);
+      if( ::arg().mustDo("non-local-bind") )
+  	Utility::setBindAny(AF_INET, s);
 
+      if(::bind(s, (sockaddr*)&locala, locala.getSocklen()) < 0) {
+        string binderror = strerror(errno);
+        close(s);
+        if( errno == EADDRNOTAVAIL && ! ::arg().mustDo("local-address-nonexist-fail") ) {
+          g_log<<Logger::Error<<"IPv4 Address " << localname << " does not exist on this server - skipping UDP bind" << endl;
+          continue;
+        } else {
+          g_log<<Logger::Error<<"Unable to bind UDP socket to '"+locala.toStringWithPort()+"': "<<binderror<<endl;
+          throw PDNSException("Unable to bind to UDP socket");
+        }
+      }
+    }
+
+    setCloseOnExec(s);
+
+    if(!setNonBlocking(s))
+      throw PDNSException("Unable to set UDP socket to non-blocking: "+stringerror());
 
     if( !d_additional_socket )
         g_localaddresses.push_back(locala);
 
-    if(::bind(s, (sockaddr*)&locala, locala.getSocklen()) < 0) {
-      string binderror = strerror(errno);
-      close(s);
-      if( errno == EADDRNOTAVAIL && ! ::arg().mustDo("local-address-nonexist-fail") ) {
-        g_log<<Logger::Error<<"IPv4 Address " << localname << " does not exist on this server - skipping UDP bind" << endl;
-        continue;
-      } else {
-        g_log<<Logger::Error<<"Unable to bind UDP socket to '"+locala.toStringWithPort()+"': "<<binderror<<endl;
-        throw PDNSException("Unable to bind to UDP socket");
-      }
-    }
     d_sockets.push_back(s);
     g_log<<Logger::Error<<"UDP server bound to "<<locala.toStringWithPort()<<endl;
     struct pollfd pfd;
@@ -198,6 +205,8 @@ void UDPNameserver::bindIPv6()
 
   if(locals.empty())
     return;
+
+  map<string,int> fd_map = ::arg().asFDMap("local-address-udp-fds");
 
   int s;
   for(vector<string>::const_iterator i=locals.begin();i!=locals.end();++i) {

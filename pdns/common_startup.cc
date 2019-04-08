@@ -82,9 +82,13 @@ void declareArguments()
   ::arg().setSwitch("log-dns-details","If PDNS should log DNS non-erroneous details")="no";
   ::arg().setSwitch("log-dns-queries","If PDNS should log all incoming DNS queries")="no";
   ::arg().set("local-address","Local IP addresses to which we bind")="0.0.0.0";
+  ::arg().set("local-address-udp-fds","A map from addresses in local-address to inherited UDP file descriptors")="";
+  ::arg().set("local-address-tcp-fds","A map from addresses in local-address to inherited TCP file descriptors")="";
   ::arg().setSwitch("local-address-nonexist-fail","Fail to start if one or more of the local-address's do not exist on this server")="yes";
   ::arg().setSwitch("non-local-bind", "Enable binding to non-local addresses by using FREEBIND / BINDANY socket options")="no";
-  ::arg().set("local-ipv6","Local IP address to which we bind")="::";
+  ::arg().set("local-ipv6","Local IPv6 addresses to which we bind")="::";
+  ::arg().set("local-ipv6-udp-fds","A map of local IPv6 addresses to inherited UDP file descriptors")="";
+  ::arg().set("local-ipv6-tcp-fds","A map of local IPv6 addresses to inherited TCP file descriptors")="";
   ::arg().setSwitch("reuseport","Enable higher performance on compliant kernels by using SO_REUSEPORT allowing each receiver thread to open its own socket")="no";
   ::arg().setSwitch("local-ipv6-nonexist-fail","Fail to start if one or more of the local-ipv6 addresses do not exist on this server")="yes";
   ::arg().set("query-local-address","Source IP address for sending queries")="0.0.0.0";

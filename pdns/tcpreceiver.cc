@@ -1223,52 +1223,61 @@ TCPNameserver::TCPNameserver()
   if(locals.empty() && locals6.empty())
     throw PDNSException("No local address specified");
 
+  map<string,int> v4_fd_map = ::arg().asFDMap("local-address-tcp-fds");
+
   d_ng.toMasks(::arg()["allow-axfr-ips"] );
 
   signal(SIGPIPE,SIG_IGN);
 
   for(vector<string>::const_iterator laddr=locals.begin();laddr!=locals.end();++laddr) {
-    int s=socket(AF_INET,SOCK_STREAM,0); 
-    
-    if(s<0) 
-      throw PDNSException("Unable to acquire TCP socket: "+stringerror());
-
-    setCloseOnExec(s);
-
     ComboAddress local(*laddr, ::arg().asNum("local-port"));
-      
-    int tmp=1;
-    if(setsockopt(s,SOL_SOCKET,SO_REUSEADDR,(char*)&tmp,sizeof tmp)<0) {
-      g_log<<Logger::Error<<"Setsockopt failed"<<endl;
-      _exit(1);  
-    }
 
-    if (::arg().asNum("tcp-fast-open") > 0) {
-#ifdef TCP_FASTOPEN
-      int fastOpenQueueSize = ::arg().asNum("tcp-fast-open");
-      if (setsockopt(s, IPPROTO_TCP, TCP_FASTOPEN, &fastOpenQueueSize, sizeof fastOpenQueueSize) < 0) {
-        g_log<<Logger::Error<<"Failed to enable TCP Fast Open for listening socket: "<<strerror(errno)<<endl;
+    const auto fd_it = v4_fd_map.find(*laddr);
+    int s;
+    if(fd_it != v4_fd_map.end()) {
+      s=fd_it->second;
+    } else {
+      s=socket(AF_INET,SOCK_STREAM,0);
+
+      if(s<0)
+        throw PDNSException("Unable to acquire TCP socket: "+stringerror());
+
+      int tmp=1;
+      if(setsockopt(s,SOL_SOCKET,SO_REUSEADDR,(char*)&tmp,sizeof tmp)<0) {
+        g_log<<Logger::Error<<"Setsockopt failed"<<endl;
+        _exit(1);
       }
-#else
-      g_log<<Logger::Warning<<"TCP Fast Open configured but not supported for listening socket"<<endl;
-#endif
-    }
 
-    if( ::arg().mustDo("non-local-bind") )
+      if (::arg().asNum("tcp-fast-open") > 0) {
+#ifdef TCP_FASTOPEN
+        int fastOpenQueueSize = ::arg().asNum("tcp-fast-open");
+        if (setsockopt(s, IPPROTO_TCP, TCP_FASTOPEN, &fastOpenQueueSize, sizeof fastOpenQueueSize) < 0) {
+          g_log<<Logger::Error<<"Failed to enable TCP Fast Open for listening socket: "<<strerror(errno)<<endl;
+        }
+#else
+        g_log<<Logger::Warning<<"TCP Fast Open configured but not supported for listening socket"<<endl;
+#endif
+      }
+
+      if( ::arg().mustDo("non-local-bind") )
 	Utility::setBindAny(AF_INET, s);
 
-    if(::bind(s, (sockaddr*)&local, local.getSocklen())<0) {
-      close(s);
-      if( errno == EADDRNOTAVAIL && ! ::arg().mustDo("local-address-nonexist-fail") ) {
-        g_log<<Logger::Error<<"IPv4 Address " << *laddr << " does not exist on this server - skipping TCP bind" << endl;
-        continue;
-      } else {
-        g_log<<Logger::Error<<"Unable to bind to TCP socket " << *laddr << ": "<<strerror(errno)<<endl;
-        throw PDNSException("Unable to bind to TCP socket");
+      if(::bind(s, (sockaddr*)&local, local.getSocklen())<0) {
+        close(s);
+        if( errno == EADDRNOTAVAIL && ! ::arg().mustDo("local-address-nonexist-fail") ) {
+          g_log<<Logger::Error<<"IPv4 Address " << *laddr << " does not exist on this server - skipping TCP bind" << endl;
+          continue;
+        } else {
+          g_log<<Logger::Error<<"Unable to bind to TCP socket " << *laddr << ": "<<strerror(errno)<<endl;
+          throw PDNSException("Unable to bind to TCP socket");
+        }
       }
+
+      listen(s,128);
     }
+
+    setCloseOnExec(s);
     
-    listen(s,128);
     g_log<<Logger::Error<<"TCP server bound to "<<local.toStringWithPort()<<endl;
     d_sockets.push_back(s);
     struct pollfd pfd;
