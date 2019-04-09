@@ -1224,6 +1224,7 @@ TCPNameserver::TCPNameserver()
     throw PDNSException("No local address specified");
 
   map<string,int> v4_fd_map = ::arg().asFDMap("local-address-tcp-fds");
+  map<string,int> v6_fd_map = ::arg().asFDMap("local-ipv6-tcp-fds");
 
   d_ng.toMasks(::arg()["allow-axfr-ips"] );
 
@@ -1289,14 +1290,17 @@ TCPNameserver::TCPNameserver()
   }
 
   for(vector<string>::const_iterator laddr=locals6.begin();laddr!=locals6.end();++laddr) {
-    int s=socket(AF_INET6,SOCK_STREAM,0); 
+    ComboAddress local(*laddr, ::arg().asNum("local-port"));
+
+    const auto fd_it = v6_fd_map.find(*laddr);
+    int s;
+    if(fd_it != v6_fd_map.end()) {
+      s=fd_it->second;
+    } else {
+      s=socket(AF_INET6,SOCK_STREAM,0); 
 
     if(s<0) 
       throw PDNSException("Unable to acquire TCPv6 socket: "+stringerror());
-
-    setCloseOnExec(s);
-
-    ComboAddress local(*laddr, ::arg().asNum("local-port"));
 
     int tmp=1;
     if(setsockopt(s,SOL_SOCKET,SO_REUSEADDR,(char*)&tmp,sizeof tmp)<0) {
@@ -1330,8 +1334,12 @@ TCPNameserver::TCPNameserver()
         throw PDNSException("Unable to bind to TCPv6 socket");
       }
     }
+    }
     
     listen(s,128);
+
+    setCloseOnExec(s);
+
     g_log<<Logger::Error<<"TCPv6 server bound to "<<local.toStringWithPort()<<endl; // this gets %eth0 right
     d_sockets.push_back(s);
 

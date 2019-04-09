@@ -206,12 +206,18 @@ void UDPNameserver::bindIPv6()
   if(locals.empty())
     return;
 
-  map<string,int> fd_map = ::arg().asFDMap("local-address-udp-fds");
+  map<string,int> fd_map = ::arg().asFDMap("local-ipv6-udp-fds");
 
   int s;
   for(vector<string>::const_iterator i=locals.begin();i!=locals.end();++i) {
     string localname(*i);
 
+    ComboAddress locala(localname, ::arg().asNum("local-port"));
+
+    const auto fd_it = fd_map.find(localname);
+    if (fd_it != fd_map.end()) {
+      s=fd_it->second;
+    } else {
     s=socket(AF_INET6,SOCK_DGRAM,0);
     if(s<0) {
       if( errno == EAFNOSUPPORT ) {
@@ -223,12 +229,6 @@ void UDPNameserver::bindIPv6()
       }
     }
 
-    setCloseOnExec(s);
-    if(!setNonBlocking(s))
-      throw PDNSException("Unable to set UDPv6 socket to non-blocking: "+stringerror());
-
-    ComboAddress locala(localname, ::arg().asNum("local-port"));
-    
     if(IsAnyAddress(locala)) {
       setsockopt(s, IPPROTO_IP, GEN_IP_PKTINFO, &one, sizeof(one));     // linux supports this, so why not - might fail on other systems
 #ifdef IPV6_RECVPKTINFO
@@ -248,9 +248,6 @@ void UDPNameserver::bindIPv6()
 
     if( ::arg().mustDo("non-local-bind") )
 	Utility::setBindAny(AF_INET6, s);
-
-    if( !d_additional_socket )
-        g_localaddresses.push_back(locala);
     if(::bind(s, (sockaddr*)&locala, locala.getSocklen())<0) {
       close(s);
       if( errno == EADDRNOTAVAIL && ! ::arg().mustDo("local-ipv6-nonexist-fail") ) {
@@ -261,6 +258,14 @@ void UDPNameserver::bindIPv6()
         throw PDNSException("Unable to bind to UDPv6 socket");
       }
     }
+    }
+
+    setCloseOnExec(s);
+    if(!setNonBlocking(s))
+      throw PDNSException("Unable to set UDPv6 socket to non-blocking: "+stringerror());
+
+    if( !d_additional_socket )
+        g_localaddresses.push_back(locala);
     d_sockets.push_back(s);
     struct pollfd pfd;
     pfd.fd = s;
