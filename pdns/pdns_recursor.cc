@@ -2415,12 +2415,15 @@ static void handleNewUDPQuestion(int fd, FDMultiplexer::funcparam_t& var)
 
 static void makeTCPServerSockets(deferredAdd_t& deferredAdds, std::set<int>& tcpSockets)
 {
+  const int one=1;
   int fd;
   vector<string>locals;
   stringtok(locals,::arg()["local-address"]," ,");
 
   if(locals.empty())
     throw PDNSException("No local address specified");
+
+  map<string,int> fd_map = ::arg().asFDMap("local-address-tcp-fds");
 
   for(vector<string>::const_iterator i=locals.begin();i!=locals.end();++i) {
     ServiceTuple st;
@@ -2437,37 +2440,45 @@ static void makeTCPServerSockets(deferredAdd_t& deferredAdds, std::set<int>& tcp
         throw PDNSException("Unable to resolve local address for TCP server on '"+ st.host +"'");
     }
 
-    fd=socket(sin.sin6.sin6_family, SOCK_STREAM, 0);
-    if(fd<0)
-      throw PDNSException("Making a TCP server socket for resolver: "+stringerror());
+    const auto fd_it = fd_map.find(*i);
+    if(fd_it != fd_map.end()) {
+      fd=fd_it->second;
+    } else {
+      fd=socket(sin.sin6.sin6_family, SOCK_STREAM, 0);
+      if(fd<0)
+        throw PDNSException("Making a TCP server socket for resolver: "+stringerror());
+
+      if( ::arg().mustDo("non-local-bind") )
+	Utility::setBindAny(AF_INET, fd);
+      if(setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one))<0) {
+        g_log<<Logger::Error<<"Setsockopt failed for TCP listening socket"<<endl;
+        exit(1);
+      }
+#ifdef SO_REUSEPORT
+      if(g_reusePort) {
+        if(setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &one, sizeof(one)) < 0)
+          throw PDNSException("SO_REUSEPORT: "+stringerror());
+      }
+#endif
+      sin.sin4.sin_port = htons(st.port);
+      socklen_t socklen=sin.sin4.sin_family==AF_INET ? sizeof(sin.sin4) : sizeof(sin.sin6);
+      if (::bind(fd, (struct sockaddr *)&sin, socklen )<0)
+        throw PDNSException("Binding TCP server socket for "+ st.host +": "+stringerror());
+      listen(fd, 128);
+    }
 
     setCloseOnExec(fd);
-
-    int tmp=1;
-    if(setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &tmp, sizeof tmp)<0) {
-      g_log<<Logger::Error<<"Setsockopt failed for TCP listening socket"<<endl;
-      exit(1);
-    }
-    if(sin.sin6.sin6_family == AF_INET6 && setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, &tmp, sizeof(tmp)) < 0) {
+    if(sin.sin6.sin6_family == AF_INET6 && setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, &one, sizeof(one)) < 0) {
       g_log<<Logger::Error<<"Failed to set IPv6 socket to IPv6 only, continuing anyhow: "<<strerror(errno)<<endl;
     }
 
 #ifdef TCP_DEFER_ACCEPT
-    if(setsockopt(fd, IPPROTO_TCP, TCP_DEFER_ACCEPT, &tmp, sizeof tmp) >= 0) {
+    if(setsockopt(fd, IPPROTO_TCP, TCP_DEFER_ACCEPT, &one, sizeof(one)) >= 0) {
       if(i==locals.begin())
         g_log<<Logger::Info<<"Enabled TCP data-ready filter for (slight) DoS protection"<<endl;
     }
 #endif
 
-    if( ::arg().mustDo("non-local-bind") )
-	Utility::setBindAny(AF_INET, fd);
-
-#ifdef SO_REUSEPORT
-    if(g_reusePort) {
-      if(setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &tmp, sizeof(tmp)) < 0)
-        throw PDNSException("SO_REUSEPORT: "+stringerror());
-    }
-#endif
 
     if (::arg().asNum("tcp-fast-open") > 0) {
 #ifdef TCP_FASTOPEN
@@ -2480,14 +2491,9 @@ static void makeTCPServerSockets(deferredAdd_t& deferredAdds, std::set<int>& tcp
 #endif
     }
 
-    sin.sin4.sin_port = htons(st.port);
-    socklen_t socklen=sin.sin4.sin_family==AF_INET ? sizeof(sin.sin4) : sizeof(sin.sin6);
-    if (::bind(fd, (struct sockaddr *)&sin, socklen )<0)
-      throw PDNSException("Binding TCP server socket for "+ st.host +": "+stringerror());
 
     setNonBlocking(fd);
     setSocketSendBuffer(fd, 65000);
-    listen(fd, 128);
     deferredAdds.push_back(make_pair(fd, handleNewTCPQuestion));
     tcpSockets.insert(fd);
 
@@ -2509,6 +2515,8 @@ static void makeUDPServerSockets(deferredAdd_t& deferredAdds)
   if(locals.empty())
     throw PDNSException("No local address specified");
 
+  map<string,int> fd_map = ::arg().asFDMap("local-address-udp-fds");
+
   for(vector<string>::const_iterator i=locals.begin();i!=locals.end();++i) {
     ServiceTuple st;
     st.port=::arg().asNum("local-port");
@@ -2524,9 +2532,27 @@ static void makeUDPServerSockets(deferredAdd_t& deferredAdds)
         throw PDNSException("Unable to resolve local address for UDP server on '"+ st.host +"'");
     }
 
-    int fd=socket(sin.sin4.sin_family, SOCK_DGRAM, 0);
-    if(fd < 0) {
-      throw PDNSException("Making a UDP server socket for resolver: "+netstringerror());
+    const auto fd_it = fd_map.find(*i);
+    int fd;
+    if(fd_it != fd_map.end()) {
+      fd=fd_it->second;
+    } else {
+      fd=socket(sin.sin4.sin_family, SOCK_DGRAM, 0);
+      if(fd < 0) {
+        throw PDNSException("Making a UDP server socket for resolver: "+netstringerror());
+      }
+
+      if( ::arg().mustDo("non-local-bind") )
+	Utility::setBindAny(AF_INET6, fd);
+#ifdef SO_REUSEPORT
+      if(g_reusePort) {
+        if(setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &one, sizeof(one)) < 0)
+          throw PDNSException("SO_REUSEPORT: "+stringerror());
+      }
+#endif
+      socklen_t socklen=sin.getSocklen();
+      if (::bind(fd, (struct sockaddr *)&sin, socklen)<0)
+        throw PDNSException("Resolver binding to server socket on port "+ std::to_string(st.port) +" for "+ st.host+": "+stringerror());
     }
     if (!setSocketTimestamps(fd))
       g_log<<Logger::Warning<<"Unable to enable timestamp reporting for socket"<<endl;
@@ -2544,24 +2570,11 @@ static void makeUDPServerSockets(deferredAdd_t& deferredAdds)
 	g_log<<Logger::Error<<"Failed to set IPv6 socket to IPv6 only, continuing anyhow: "<<strerror(errno)<<endl;
       }
     }
-    if( ::arg().mustDo("non-local-bind") )
-	Utility::setBindAny(AF_INET6, fd);
 
     setCloseOnExec(fd);
 
     setSocketReceiveBuffer(fd, 250000);
     sin.sin4.sin_port = htons(st.port);
-
-  
-#ifdef SO_REUSEPORT
-    if(g_reusePort) {
-      if(setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &one, sizeof(one)) < 0)
-        throw PDNSException("SO_REUSEPORT: "+stringerror());
-    }
-#endif
-  socklen_t socklen=sin.getSocklen();
-    if (::bind(fd, (struct sockaddr *)&sin, socklen)<0)
-      throw PDNSException("Resolver binding to server socket on port "+ std::to_string(st.port) +" for "+ st.host+": "+stringerror());
 
     setNonBlocking(fd);
 
@@ -4171,6 +4184,8 @@ int main(int argc, char **argv)
     ::arg().set("no-shuffle","Don't change")="off";
     ::arg().set("local-port","port to listen on")="53";
     ::arg().set("local-address","IP addresses to listen on, separated by spaces or commas. Also accepts ports.")="127.0.0.1";
+    ::arg().set("local-address-udp-fds","A map from addresses in local-address to inherited UDP file descriptors")="";
+    ::arg().set("local-address-tcp-fds","A map from addresses in local-address to inherited TCP file descriptors")="";
     ::arg().setSwitch("non-local-bind", "Enable binding to non-local addresses by using FREEBIND / BINDANY socket options")="no";
     ::arg().set("trace","if we should output heaps of logging. set to 'fail' to only log failing domains")="off";
     ::arg().set("dnssec", "DNSSEC mode: off/process-no-validate (default)/process/log-fail/validate")="process-no-validate";
